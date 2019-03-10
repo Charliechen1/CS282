@@ -137,7 +137,43 @@ class CaptioningRNN(object):
         # defined above to store loss and gradients; grads[k] should give the      #
         # gradients for self.params[k].                                            #
         ############################################################################
-        pass
+        # FORWARD PASS.
+        # Transform CNN image feature to be the initial hidden state.
+        inital_hidden_state, cache_initial = affine_forward(features, W_proj, b_proj)
+
+        # Embed the input word captions.
+        embedded_captions, cache_word_embedding = word_embedding_forward(captions_in, W_embed)
+
+        # Vanilla RNN or LSTM forward pass.
+        if self.cell_type == 'rnn':
+            rnn_outputs, cache_rnn = rnn_forward(embedded_captions, inital_hidden_state, Wx, Wh, b)
+        elif self.cell_type == 'lstm':
+            rnn_outputs, cache_rnn = lstm_forward(embedded_captions, inital_hidden_state, Wx, Wh, b)
+
+        # Scores and loss.
+        scores, cache_scores = temporal_affine_forward(rnn_outputs, W_vocab, b_vocab)
+        loss, dsoftmax = temporal_softmax_loss(scores, captions_out, mask)
+
+        # BACKWARD PASS.
+        # Backprop dsoftmax to calculate gradient for W_vocab, b_vocab.
+        dscores, dW_vocab, db_vocab = temporal_affine_backward(dsoftmax, cache_scores)
+        grads['W_vocab'], grads['b_vocab'] = dW_vocab, db_vocab
+
+        # Backprop dscores through the RNN module calculating all gradients.
+        if self.cell_type == 'rnn':
+            dx, dh0, dWx, dWh, db = rnn_backward(dscores, cache_rnn)
+            grads['b'], grads['Wh'], grads['Wx'] = db, dWh, dWx
+        elif self.cell_type == 'lstm':
+            dx, dh0, dWx, dWh, db = lstm_backward(dscores, cache_rnn)
+            grads['b'], grads['Wh'], grads['Wx'] = db, dWh, dWx
+
+        # Backprop dx to get gradient for word embedding weights.
+        dW_embed = word_embedding_backward(dx, cache_word_embedding)
+        grads['W_embed'] = dW_embed
+
+        # Backprop dh0 to get gradient for feature projection weights.
+        dx_initial, dW_proj, db_proj = affine_backward(dh0, cache_initial)
+        grads['W_proj'], grads['b_proj'] = dW_proj, db_proj
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -199,7 +235,30 @@ class CaptioningRNN(object):
         # functions; you'll need to call rnn_step_forward or lstm_step_forward in #
         # a loop.                                                                 #
         ###########################################################################
-        pass
+        # Calculate initial hidden state h0 from our image features and learned transform.
+        cur_hidden_state, _ = affine_forward(features, W_proj, b_proj)
+
+        if self.cell_type == 'lstm':
+            cur_cell_state = np.zeros_like(cur_hidden_state)
+
+        # Embed our start token, will broadcast to size N.
+        word_embed, _ = word_embedding_forward(self._start, W_embed)
+
+        # Sample max_length number of words.
+        for i in range(max_length):
+            if self.cell_type == 'rnn':
+                cur_hidden_state, _ = rnn_step_forward(word_embed, cur_hidden_state, Wx, Wh, b)
+            elif self.cell_type == 'lstm':
+                cur_hidden_state, cur_cell_state, _ = lstm_step_forward(word_embed, cur_hidden_state, cur_cell_state, Wx, Wh, b)
+
+            # Scores for this current time step.
+            cur_scores, _ = affine_forward(cur_hidden_state, W_vocab, b_vocab)
+
+            # Find the highest value index and assign it to the correct place in captions.
+            captions[:,i] = np.argmax(cur_scores, axis=1)
+
+            # Embed the word produced for the next iteration.
+            word_embed, _ = word_embedding_forward(captions[:, i], W_embed)
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
